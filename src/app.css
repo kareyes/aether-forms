@@ -1,0 +1,11 @@
+@import "tailwindcss";
+
+/* The theme (CSS variables, @theme inline, @custom-variant dark) comes from
+   aether-ui — this package styles nothing of its own, it only arranges
+   aether-ui controls. */
+@import "aether-ui/styles";
+
+/* Tailwind only emits classes it can see in source. The form components live in
+   this package's own src, but the controls they render come from aether-ui's
+   built output, so both trees have to be scanned. */
+@source "../node_modules/aether-ui/dist";
