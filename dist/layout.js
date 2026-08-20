@@ -1,0 +1,431 @@
+/**
+ * Layout extraction utilities for schema-first forms
+ *
+ * Extracts fields, sections, and steps from schema annotations
+ * to build a framework-agnostic form layout structure.
+ */
+import { Schema, SchemaAST } from "effect";
+import { getFieldLayout, getFieldUI, getFormLayout, } from "./annotations.js";
+// ============================================================================
+// Schema AST Traversal
+// ============================================================================
+/**
+ * Check if a property signature is optional
+ */
+const isOptionalProperty = (prop) => {
+    return prop.isOptional;
+};
+/**
+ * Infer input type from schema AST when not explicitly annotated
+ */
+const inferInputType = (ast) => {
+    switch (ast._tag) {
+        case "BooleanKeyword":
+            return "checkbox";
+        case "NumberKeyword":
+            return "number";
+        case "StringKeyword":
+            return "text";
+        case "Literal": {
+            if (typeof ast.literal === "boolean")
+                return "checkbox";
+            if (typeof ast.literal === "number")
+                return "number";
+            return "text";
+        }
+        case "Union": {
+            // Check if it's an enum-like union of literals
+            const allLiterals = ast.types.every((t) => t._tag === "Literal" &&
+                typeof t.literal === "string");
+            if (allLiterals && ast.types.length <= 5)
+                return "radio";
+            if (allLiterals)
+                return "select";
+            return "text";
+        }
+        case "Refinement":
+        case "Transformation":
+            // Recurse into the underlying type
+            return inferInputType(ast.from);
+        case "Suspend":
+            return inferInputType(ast.f());
+        default:
+            return "text";
+    }
+};
+/**
+ * Extract default value from schema if available
+ */
+const extractDefaultValue = (ast) => {
+    // Check for PropertySignatureDefault annotation
+    const annotated = ast;
+    const defaultAnnotation = annotated.annotations?.[SchemaAST.DefaultAnnotationId];
+    if (defaultAnnotation !== undefined) {
+        return typeof defaultAnnotation === "function"
+            ? defaultAnnotation()
+            : defaultAnnotation;
+    }
+    return undefined;
+};
+/**
+ * Unwrap optional/nullable types to get the core type
+ */
+const unwrapType = (ast) => {
+    if (ast._tag === "Union") {
+        // Filter out undefined/null types
+        const nonNullTypes = ast.types.filter((t) => (t._tag !== "UndefinedKeyword" && t._tag !== "Literal") ||
+            (t._tag === "Literal" && t.literal !== null));
+        if (nonNullTypes.length === 1) {
+            return nonNullTypes[0];
+        }
+    }
+    if (ast._tag === "Refinement" || ast._tag === "Transformation") {
+        return unwrapType(ast.from);
+    }
+    return ast;
+};
+// ============================================================================
+// Field Extraction
+// ============================================================================
+/**
+ * Extract a single field from a property signature
+ */
+const extractField = (name, prop) => {
+    const ast = prop.type;
+    const unwrapped = unwrapType(ast);
+    // Annotations can land in three places depending on how the field was
+    // written, so all three are consulted, outermost first:
+    //
+    //   pipe(Schema.optional(X), withField(...))  -> on the PropertySignature
+    //   pipe(X, withField(...))                   -> on prop.type
+    //   Schema.optional(pipe(X, withField(...)))  -> inside prop.type's union
+    //
+    // Reading only prop.type used to drop the first case silently: the field
+    // still rendered, but with a humanised fallback label, no section, and
+    // default ordering.
+    const ui = getFieldUI(prop) ??
+        getFieldUI(ast) ??
+        getFieldUI(unwrapped);
+    const layout = getFieldLayout(prop) ??
+        getFieldLayout(ast) ??
+        getFieldLayout(unwrapped);
+    // If no UI annotation, create minimal field
+    const label = ui?.label ?? formatFieldName(name);
+    const inputType = ui?.inputType ?? inferInputType(unwrapped);
+    const required = !isOptionalProperty(prop);
+    return {
+        name,
+        label,
+        placeholder: ui?.placeholder,
+        description: ui?.description,
+        inputType,
+        required,
+        options: ui?.options,
+        optionGroups: ui?.optionGroups,
+        mask: ui?.mask,
+        autocomplete: ui?.autocomplete,
+        disabled: ui?.disabled,
+        readonly: ui?.readonly,
+        section: layout?.section,
+        step: layout?.step,
+        order: layout?.order ?? 999,
+        colSpan: layout?.colSpan ?? "full",
+        colSpanSm: layout?.colSpanSm,
+        colSpanMd: layout?.colSpanMd,
+        colSpanLg: layout?.colSpanLg,
+        defaultValue: extractDefaultValue(ast),
+        fileMode: ui?.fileMode,
+        multiple: ui?.multiple,
+        accept: ui?.accept,
+    };
+};
+/**
+ * Format a camelCase field name as a readable label
+ */
+const formatFieldName = (name) => {
+    return name
+        .replace(/([A-Z])/g, " $1")
+        .replace(/^./, (str) => str.toUpperCase())
+        .trim();
+};
+// ============================================================================
+// Form Extraction
+// ============================================================================
+/**
+ * Extract all fields from a struct schema
+ */
+export const extractFields = (schema) => {
+    const ast = schema.ast;
+    if (ast._tag !== "TypeLiteral") {
+        throw new Error("extractFields only works with Struct schemas");
+    }
+    const fields = [];
+    for (const prop of ast.propertySignatures) {
+        if (typeof prop.name !== "string")
+            continue;
+        const field = extractField(prop.name, prop);
+        if (field) {
+            fields.push(field);
+        }
+    }
+    return fields.sort((a, b) => a.order - b.order);
+};
+/**
+ * Group fields by section
+ */
+export const groupFieldsBySection = (fields, sectionConfigs) => {
+    const sectionMap = new Map();
+    const defaultSection = "default";
+    // Group fields by section
+    for (const field of fields) {
+        const sectionId = field.section ?? defaultSection;
+        const existing = sectionMap.get(sectionId) ?? [];
+        sectionMap.set(sectionId, [...existing, field]);
+    }
+    // Build section objects
+    const sections = [];
+    const configMap = new Map(sectionConfigs?.map((c) => [c.id, c]) ?? []);
+    for (const [sectionId, sectionFields] of sectionMap) {
+        const config = configMap.get(sectionId);
+        sections.push({
+            id: sectionId,
+            title: config?.title,
+            description: config?.description,
+            order: config?.order ?? 999,
+            collapsible: config?.collapsible,
+            defaultCollapsed: config?.defaultCollapsed,
+            fields: sectionFields.sort((a, b) => a.order - b.order),
+        });
+    }
+    return sections.sort((a, b) => a.order - b.order);
+};
+/**
+ * Group fields by step (for multi-step forms)
+ */
+export const groupFieldsByStep = (fields, stepConfigs, sectionConfigs) => {
+    const stepMap = new Map();
+    // Group fields by step
+    for (const field of fields) {
+        const step = field.step ?? 1;
+        const existing = stepMap.get(step) ?? [];
+        stepMap.set(step, [...existing, field]);
+    }
+    // Build step objects
+    const steps = [];
+    const configMap = new Map(stepConfigs?.map((c) => [c.step, c]) ?? []);
+    for (const [stepNum, stepFields] of stepMap) {
+        const config = configMap.get(stepNum);
+        // Group this step's fields by section
+        const stepSections = groupFieldsBySection(stepFields, sectionConfigs);
+        steps.push({
+            step: stepNum,
+            title: config?.title ?? `Step ${stepNum}`,
+            description: config?.description,
+            icon: config?.icon,
+            sections: stepSections,
+            fields: stepFields.sort((a, b) => a.order - b.order),
+        });
+    }
+    return steps.sort((a, b) => a.step - b.step);
+};
+/**
+ * Extract complete form structure from schema
+ *
+ * @example
+ * ```ts
+ * const form = extractForm(UserRegistrationSchema);
+ * console.log(form.isMultiStep); // true
+ * console.log(form.steps.length); // 3
+ * ```
+ */
+export const extractForm = (schema) => {
+    const ast = schema.ast;
+    const formLayout = getFormLayout(ast) ?? {
+        columns: 1,
+        gap: "md",
+    };
+    const fields = extractFields(schema);
+    const sections = groupFieldsBySection(fields, formLayout.sections);
+    const steps = groupFieldsByStep(fields, formLayout.steps, formLayout.sections);
+    const isMultiStep = steps.length > 1 || formLayout.steps !== undefined;
+    return {
+        fields,
+        sections,
+        steps,
+        layout: formLayout,
+        isMultiStep,
+    };
+};
+// ============================================================================
+// Field Filtering Utilities
+// ============================================================================
+/**
+ * Get fields for a specific step
+ */
+export const getFieldsForStep = (form, step) => {
+    const stepData = form.steps.find((s) => s.step === step);
+    return stepData?.fields ?? [];
+};
+/**
+ * Get fields for a specific section
+ */
+export const getFieldsForSection = (form, sectionId) => {
+    const section = form.sections.find((s) => s.id === sectionId);
+    return section?.fields ?? [];
+};
+/**
+ * Get visible fields (not hidden input type)
+ */
+export const getVisibleFields = (fields) => fields.filter((f) => f.inputType !== "hidden");
+/**
+ * Get required fields
+ */
+export const getRequiredFields = (fields) => fields.filter((f) => f.required);
+// ============================================================================
+// Grid CSS Class Generation
+// ============================================================================
+const COL_SPAN = {
+    full: "col-span-full",
+    1: "col-span-1",
+    2: "col-span-2",
+    3: "col-span-3",
+    4: "col-span-4",
+    5: "col-span-5",
+    6: "col-span-6",
+    7: "col-span-7",
+    8: "col-span-8",
+    9: "col-span-9",
+    10: "col-span-10",
+    11: "col-span-11",
+    12: "col-span-12",
+};
+const COL_SPAN_SM = {
+    full: "@sm:col-span-full",
+    1: "@sm:col-span-1",
+    2: "@sm:col-span-2",
+    3: "@sm:col-span-3",
+    4: "@sm:col-span-4",
+    5: "@sm:col-span-5",
+    6: "@sm:col-span-6",
+    7: "@sm:col-span-7",
+    8: "@sm:col-span-8",
+    9: "@sm:col-span-9",
+    10: "@sm:col-span-10",
+    11: "@sm:col-span-11",
+    12: "@sm:col-span-12",
+};
+const COL_SPAN_MD = {
+    full: "@md:col-span-full",
+    1: "@md:col-span-1",
+    2: "@md:col-span-2",
+    3: "@md:col-span-3",
+    4: "@md:col-span-4",
+    5: "@md:col-span-5",
+    6: "@md:col-span-6",
+    7: "@md:col-span-7",
+    8: "@md:col-span-8",
+    9: "@md:col-span-9",
+    10: "@md:col-span-10",
+    11: "@md:col-span-11",
+    12: "@md:col-span-12",
+};
+const COL_SPAN_LG = {
+    full: "@lg:col-span-full",
+    1: "@lg:col-span-1",
+    2: "@lg:col-span-2",
+    3: "@lg:col-span-3",
+    4: "@lg:col-span-4",
+    5: "@lg:col-span-5",
+    6: "@lg:col-span-6",
+    7: "@lg:col-span-7",
+    8: "@lg:col-span-8",
+    9: "@lg:col-span-9",
+    10: "@lg:col-span-10",
+    11: "@lg:col-span-11",
+    12: "@lg:col-span-12",
+};
+const GRID_COLS = {
+    1: "grid-cols-1",
+    2: "grid-cols-2",
+    3: "grid-cols-3",
+    4: "grid-cols-4",
+    5: "grid-cols-5",
+    6: "grid-cols-6",
+    7: "grid-cols-7",
+    8: "grid-cols-8",
+    9: "grid-cols-9",
+    10: "grid-cols-10",
+    11: "grid-cols-11",
+    12: "grid-cols-12",
+};
+/**
+ * Generate CSS classes for grid column span
+ */
+export const getColSpanClasses = (field) => {
+    const classes = [COL_SPAN[field.colSpan]];
+    if (field.colSpanSm)
+        classes.push(COL_SPAN_SM[field.colSpanSm]);
+    if (field.colSpanMd)
+        classes.push(COL_SPAN_MD[field.colSpanMd]);
+    if (field.colSpanLg)
+        classes.push(COL_SPAN_LG[field.colSpanLg]);
+    return classes.join(" ");
+};
+/**
+ * Generate grid container classes
+ */
+export const getGridClasses = (layout) => {
+    // @container makes the grid its own container so @sm:/@md:/@lg: col-span
+    // classes on child fields respond to the grid's own width, not the viewport.
+    const classes = ["@container", "grid"];
+    // Column count
+    const cols = layout.columns ?? 1;
+    classes.push(GRID_COLS[cols] ?? "grid-cols-1");
+    // Gap
+    switch (layout.gap) {
+        case "none":
+            break;
+        case "sm":
+            classes.push("gap-2");
+            break;
+        case "lg":
+            classes.push("gap-6");
+            break;
+        case "md":
+        default:
+            classes.push("gap-4");
+    }
+    return classes.join(" ");
+};
+// ============================================================================
+// Default Value Extraction
+// ============================================================================
+/**
+ * Build initial form values from extracted fields
+ */
+export const buildDefaultValues = (fields) => {
+    const defaults = {};
+    for (const field of fields) {
+        if (field.defaultValue !== undefined) {
+            defaults[field.name] = field.defaultValue;
+        }
+        else {
+            // Set sensible defaults based on input type
+            switch (field.inputType) {
+                case "checkbox":
+                case "switch":
+                    defaults[field.name] = false;
+                    break;
+                case "number":
+                    defaults[field.name] = undefined;
+                    break;
+                case "file":
+                    defaults[field.name] = null;
+                    break;
+                default:
+                    defaults[field.name] = "";
+            }
+        }
+    }
+    return defaults;
+};
