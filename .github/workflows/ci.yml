@@ -1,0 +1,30 @@
+# Runs the unit tests for the pure entry point (`src/lib/*.ts`) on every push
+# and pull request.
+#
+# Scope note: this deliberately does NOT run `svelte-check`. The components
+# under `src/lib/svelte/` import `aether-ui`, which is an optional peer that
+# resolves from a sibling repo with no published `dist/` — typechecking them
+# here would fail on a missing module rather than on anything real. The pure
+# modules carry every decision the form system makes (see CONTRIBUTING notes in
+# the README), so they are what CI guards.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install
+
+      - run: bun test src/
