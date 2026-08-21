@@ -77,12 +77,17 @@ type Login = Schema.Schema.Type<typeof LoginSchema>;
 
 ## Installation
 
+This package is distributed from GitHub rather than npm, so install it by
+repository reference:
+
 ```bash
-bun add aether-forms effect
+bun add github:kareyes/aether-forms effect
 
 # The Svelte components additionally need aether-ui and svelte:
-bun add aether-ui svelte
+bun add github:kareyes/aether-ui svelte
 ```
+
+Pin a release by appending a ref — `github:kareyes/aether-forms#v0.0.1`.
 
 ---
 

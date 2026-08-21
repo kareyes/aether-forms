@@ -23,8 +23,9 @@
 	],
 	"scripts": {
 		"dev": "bunx --bun vite dev",
-		"build": "bunx --bun vite build && bunx --bun svelte-package",
-		"package": "bunx --bun svelte-package",
+		"build": "bunx --bun vite build && bunx --bun svelte-package && bun run clean-dist",
+		"package": "bunx --bun svelte-package && bun run clean-dist",
+		"clean-dist": "bun scripts/clean-dist.js",
 		"watch-package": "bunx --bun svelte-kit sync && bunx --bun svelte-package --watch",
 		"preview": "bunx --bun vite preview",
 		"prepare": "bunx --bun svelte-kit sync || echo ''",

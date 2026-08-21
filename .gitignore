@@ -1,8 +1,10 @@
 # Dependencies
 node_modules
 
-# Build output
-dist
+# Build output. `dist` is deliberately NOT ignored: consumers install this
+# package with `bun add github:kareyes/aether-forms`, which clones the repo
+# instead of unpacking an npm tarball, so the built output has to be committed
+# for the `exports` paths to resolve. Rebuild it with `bun run package`.
 build
 .svelte-kit
 .output
